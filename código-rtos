@@ -1,0 +1,176 @@
+#include <dht.h>
+#include <Arduino_FreeRTOS.h>
+#include <queue.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+// LCD
+#define col 16 // Serve para definir o numero de colunas do display utilizado
+#define lin  2 // Serve para definir o numero de linhas do display utilizado
+#define ende  0x27 // Serve para definir o endereço do display.
+LiquidCrystal_I2C lcd(ende, col, lin); // Chamada da funcação LiquidCrystal para ser usada com o I2C
+
+//define task handles
+TaskHandle_t TaskTemp_Handler;
+TaskHandle_t TaskLED_Handler;
+TaskHandle_t TaskSolo_Handler;
+TaskHandle_t TaskLCD_Handler;
+
+//queue
+QueueHandle_t xQueue1;
+QueueHandle_t xQueue2;
+
+
+// define tasks
+void TaskTemp(void *pvParameters );
+void TaskLED(void* pvParameters);
+void TaskSolo(void* pvParameters);
+void TaskLCD(void* pvParameters);
+
+
+//DH11 Sensor
+dht DHT;
+#define DHT11_PIN A1
+byte a[8] = {B00110, B01001, B00110, B00000, B00000, B00000, B00000, B00000}; //simbolo de grau
+
+// Sensor de umidade do solo
+const int pinoSensor = A0; //pino utilizado pelo sensor
+int valorLido; // armazena o percentual de umidade do solo
+int analogSoloSeco = 400; // valor medido com solo seco
+int analogSoloMolhado = 100; // valor medido com solo molhado
+int percSoloSeco = 0; // menor percentual do solo seco (0% - NÃO ALTERAR)
+int percSoloMolhado = 100; //maior percentual do solo molhado (100% - NÃO ALTERAR)
+
+
+void setup() {
+  Serial.begin(9600);// inicializa o serial
+  lcd.init(); // Serve para iniciar a comunicação com o display já conectado
+  lcd.backlight(); // Serve para ligar a luz do display
+  lcd.clear();
+  lcd.createChar(1, a); //cria simbolo de grau
+  pinMode(7, OUTPUT);// define o LED como saída
+
+
+  //criando queues
+  xQueue1 = xQueueCreate( 1, sizeof(int) );
+  xQueue2 = xQueueCreate( 1, sizeof(int) );
+
+
+  // criando as task
+
+  xTaskCreate(
+    TaskTemp
+    ,  "Temp"   // nome da task, melhor pra debugar depois
+    ,  128    //    tamanho do stack
+    ,  NULL //parametro passado pra task
+    ,  2  // prioridade
+    ,  &TaskTemp_Handler );// Task handle
+
+  xTaskCreate(
+    TaskLED
+    ,  "LED"
+    ,  128
+    ,  NULL
+    ,  0
+    ,  &TaskLED_Handler );
+  xTaskCreate(
+    TaskSolo
+    ,  "Solo"
+    ,  128
+    ,  NULL
+    ,  2
+    ,  &TaskSolo_Handler );
+
+  xTaskCreate(
+    TaskLCD
+    ,  "LCD"
+    ,  128
+    ,  NULL
+    ,  1
+    ,  &TaskLCD_Handler );
+
+}
+
+
+void loop()
+{
+  // Vazio, tudo é feito nas tasks
+}
+
+/*---------------------- Tasks ---------------------*/
+
+void TaskTemp(void *pvParameters)  // Task do DHT11
+{
+  (void) pvParameters;
+  for (;;) //
+  {
+    int chk = DHT.read11(DHT11_PIN); \
+    int temperatura = DHT.temperature;
+    xQueueSend(xQueue1, &temperatura, portMAX_DELAY);
+    vTaskDelay(1000 / portTICK_PERIOD_MS ); // espera 1 segundos
+
+  }
+}
+void TaskLED(void *pvParameters)  // Task do LED
+{
+  (void) pvParameters;
+  for (;;)
+  {
+    if (xQueue1 != NULL && xQueue2 != NULL){
+      digitalWrite(7, HIGH); // acendo o led
+      vTaskDelay(2000 / portTICK_PERIOD_MS ); // espera 2 segundos
+      digitalWrite(7, LOW);
+      vTaskDelay(1000 / portTICK_PERIOD_MS ); // espera 1 segundos
+    }
+    else {
+      digitalWrite(7, HIGH);
+       vTaskDelay(500 / portTICK_PERIOD_MS ); // espera meio segundos
+      digitalWrite(7, LOW); // acendo o led
+      vTaskDelay(500 / portTICK_PERIOD_MS );
+      }
+ }
+}
+
+
+  void TaskSolo(void *pvParameters)  // Task do DHT11
+  {
+    (void) pvParameters;
+    for (;;) //
+    {
+      valorLido = constrain(analogRead(pinoSensor), analogSoloMolhado, analogSoloSeco); //MANTÉM valorLido DENTRO DO INTERVALO (ENTRE analogSoloMolhado E analogSoloSeco)
+      valorLido = map(valorLido, analogSoloMolhado, analogSoloSeco, percSoloMolhado, percSoloSeco); //EXECUTA A FUNÇÃO "map" DE ACORDO COM OS PARÂMETROS PASSADOS
+      int umidade_solo = valorLido;
+      Serial.print("Umidade no sensor:");
+      Serial.println(umidade_solo);
+      xQueueSend(xQueue2, &umidade_solo, portMAX_DELAY);
+      vTaskDelay(1000 / portTICK_PERIOD_MS ); // espera 5 segundos
+    }
+  }
+
+
+  void TaskLCD(void *pvParameters)  // Task do LCD
+  {
+    int umidade_recebida = 0;
+    int temperatura_recebida = 0;
+    (void) pvParameters;
+    while (1) {
+      if (xQueueReceive(xQueue1, &temperatura_recebida, portMAX_DELAY)&& xQueueReceive(xQueue2, &umidade_recebida, portMAX_DELAY)){
+       lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("T:");
+        lcd.print(temperatura_recebida);
+        lcd.write(1);
+        lcd.print("C");
+        lcd.setCursor(10, 0);
+        lcd.print("U:");
+        lcd.print(DHT.humidity, 0);
+        lcd.print("%");
+       lcd.setCursor(0, 1);
+       lcd.print("Umi do Solo:");
+       lcd.print(umidade_recebida);  
+       lcd.print("%");
+       vTaskDelay(1000 / portTICK_PERIOD_MS );
+      }
+    }
+  }
+  
